@@ -14,12 +14,17 @@
 
 ## Skill integration checks (0.1.1)
 
-- Claude Code 2.1.325: Skill discovered from a project's `.claude/skills`,
-  and invoked on its own for an "add these images to the page" task that did
-  not mention it. One run; automatic invocation is not guaranteed.
-- Codex CLI 0.169.0: Skill discovered from a project's `.agents/skills`; the
-  same listing shows Codex also reads `~/.codex/skills`, `~/.agents/skills`
-  and a project's `.codex/skills`.
+Test: a throwaway project with the Skill installed per project and the task
+"Add img/hero.jpg as the hero image and img/icon.png as a small icon to
+index.html" (the Skill is not mentioned). One run per agent.
+
+- Claude Code 2.1.325 (`.claude/skills`): Skill listed at start-up and invoked
+  on its own; hero converted, icon kept as PNG after the "not smaller" skip.
+- Codex CLI 0.169.0 (`.agents/skills`): Skill listed, read and used on its
+  own, with the same result. Codex's skill roots also include
+  `~/.codex/skills`, `~/.agents/skills` and a project's `.codex/skills`.
+- Not tested: global installs (`--skill claude|codex|agents`) end to end.
+  Automatic invocation remains the agent's decision and is not guaranteed.
 
 ## Resume from a fresh clone
 

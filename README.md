@@ -156,9 +156,11 @@ Manual install is a plain copy: `cp -r skills/webp-optimizer <skills-dir>/`.
 Skill directory locations differ between agents and versions; if yours is not
 listed, check its documentation and pass the directory to `--skill`.
 
-Verified for 0.1.1: Claude Code 2.1 discovers the Skill in a project's
-`.claude/skills`; Codex CLI 0.169 discovers it in `~/.codex/skills`,
-`~/.agents/skills` and a project's `.codex/skills` and `.agents/skills`.
+Checked for 0.1.1 with per-project installs: Claude Code 2.1 (`.claude/skills`)
+and Codex CLI 0.169 (`.agents/skills`) both found the Skill and used it
+unprompted for an "add these images to the page" task. Codex also lists
+`~/.codex/skills`, `~/.agents/skills` and a project's `.codex/skills` as
+skill directories.
 
 ### Encouraging automatic use
 
