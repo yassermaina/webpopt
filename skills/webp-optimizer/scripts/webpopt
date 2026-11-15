@@ -1,0 +1,453 @@
+#!/usr/bin/env bash
+# webpopt - lightweight JPEG/PNG -> WebP optimizer built on cwebp (libwebp).
+# Behavior is defined in CONTRACT.md. License: MIT.
+
+set -u
+set -o pipefail
+export LC_ALL=C
+
+VERSION="0.1.0"
+PROG="webpopt"
+CONFIG_NAME=".webpopt.conf"
+
+# Defaults (overridden by config file, then by command-line options).
+quality=80
+effort=6
+max_width=0
+max_height=0
+lossless=0
+metadata="icc"
+min_savings=0
+recursive=0
+
+force=0
+dry_run=0
+quiet=0
+output_dir=""
+config_file=""
+use_config=1
+
+n_converted=0
+n_skipped=0
+n_failed=0
+bytes_before=0
+bytes_after=0
+declare -A claimed=()
+tmp_files=()
+
+usage() {
+  cat <<EOF
+$PROG $VERSION - convert JPEG/PNG images to optimized WebP (uses cwebp)
+
+Usage: $PROG [options] <file|directory>...
+
+Options:
+  -q, --quality N       Quality 0-100 (default 80)
+  -e, --effort N        Compression effort 0-6 (default 6 = smallest, slowest)
+  -w, --max-width N     Shrink to fit this width (never upscales)
+  -H, --max-height N    Shrink to fit this height (never upscales)
+  -o, --output-dir DIR  Write .webp files to DIR (default: next to each source)
+  -r, --recursive       Recurse into sub-directories
+      --lossless        Lossless encoding (good for flat-color PNG artwork)
+      --metadata MODE   Metadata to keep: none, icc (default) or all
+      --min-savings P   Keep the WebP only if at least P% smaller (default 0)
+  -f, --force           Re-encode even when the .webp is up to date
+  -n, --dry-run         Show what would happen without writing anything
+      --config FILE     Use FILE instead of searching for $CONFIG_NAME
+      --no-config       Ignore any $CONFIG_NAME file
+  -Q, --quiet           Only print warnings and errors
+  -V, --version         Print version
+  -h, --help            Print this help
+
+Originals are never modified or deleted. A WebP that is not smaller than its
+source is discarded. Settings may also come from a $CONFIG_NAME file in the
+current directory or any parent directory.
+
+Exit status: 0 ok, 1 at least one file failed, 2 usage/config error,
+3 missing dependency.
+EOF
+}
+
+say()  { ((quiet)) || printf '%s\n' "$*"; }
+warn() { printf '%s: %s\n' "$PROG" "$*" >&2; }
+die()  { warn "$2"; exit "$1"; }
+
+cleanup() {
+  local f
+  for f in "${tmp_files[@]:-}"; do
+    [[ -n $f ]] && rm -f -- "$f"
+  done
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
+is_int() { [[ $1 =~ ^[0-9]{1,6}$ ]]; }
+
+# set_opt KEY VALUE ORIGIN - validate and apply one setting.
+set_opt() {
+  local k=$1 v=$2 origin=$3
+  case $k in
+    quality|effort|max_width|max_height|min_savings)
+      is_int "$v" || die 2 "$origin: '$k' must be a non-negative integer, got '$v'"
+      v=$((10#$v))
+      case $k in
+        quality)     ((v <= 100)) || die 2 "$origin: quality must be 0-100" ;;
+        effort)      ((v <= 6))   || die 2 "$origin: effort must be 0-6" ;;
+        min_savings) ((v <= 99))  || die 2 "$origin: min_savings must be 0-99" ;;
+      esac
+      printf -v "$k" '%s' "$v"
+      ;;
+    lossless|recursive)
+      case $v in
+        1|true|yes|on)  printf -v "$k" 1 ;;
+        0|false|no|off) printf -v "$k" 0 ;;
+        *) die 2 "$origin: '$k' must be true or false, got '$v'" ;;
+      esac
+      ;;
+    metadata)
+      case $v in
+        none|icc|all) metadata=$v ;;
+        *) die 2 "$origin: metadata must be none, icc or all, got '$v'" ;;
+      esac
+      ;;
+    *) die 2 "$origin: unknown setting '$k'" ;;
+  esac
+}
+
+find_config() {
+  local d=$PWD
+  while :; do
+    if [[ -f $d/$CONFIG_NAME ]]; then
+      printf '%s\n' "$d/$CONFIG_NAME"
+      return 0
+    fi
+    [[ $d == / ]] && return 1
+    d=${d%/*}
+    [[ -z $d ]] && d=/
+  done
+}
+
+# The config file is parsed as plain "key = value" lines; it is never executed.
+load_config() {
+  local file=$1 line n=0
+  [[ -r $file ]] || die 2 "cannot read config file: $file"
+  while IFS= read -r line || [[ -n $line ]]; do
+    n=$((n + 1))
+    line=${line%%#*}
+    line=${line%$'\r'}
+    [[ $line =~ ^[[:space:]]*$ ]] && continue
+    if [[ $line =~ ^[[:space:]]*([a-z_]+)[[:space:]]*=[[:space:]]*([A-Za-z0-9]*)[[:space:]]*$ ]]; then
+      set_opt "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "$file:$n"
+    else
+      die 2 "$file:$n: expected 'key = value'"
+    fi
+  done <"$file"
+}
+
+human() {
+  local b=$1
+  if ((b < 1024)); then
+    printf '%dB' "$b"
+  elif ((b < 1048576)); then
+    printf '%d.%dK' $((b / 1024)) $(((b % 1024) * 10 / 1024))
+  else
+    printf '%d.%dM' $((b / 1048576)) $(((b % 1048576) * 10 / 1048576))
+  fi
+}
+
+skip() { n_skipped=$((n_skipped + 1)); say "skip     $1 ($2)"; }
+fail() { n_failed=$((n_failed + 1)); warn "FAILED   $1: $2"; }
+
+# exif_orientation FILE - print the EXIF orientation (1-8) of a JPEG, if any.
+# Parsed here because `file` does not report all eight values reliably.
+exif_orientation() {
+  local hex i=4 marker len tiff le=0 ifd n k e tag val
+  hex=$(od -An -v -tx1 -N 131072 -- "$1" 2>/dev/null | tr -d ' \n')
+  [[ ${hex:0:4} == ffd8 ]] || return 0
+  while ((i + 8 <= ${#hex})); do
+    [[ ${hex:i:2} == ff ]] || return 0
+    marker=${hex:i+2:2}
+    [[ $marker == da || $marker == d9 ]] && return 0
+    len=$((16#${hex:i+4:4}))
+    if [[ $marker == e1 && ${hex:i+8:12} == 457869660000 ]]; then
+      tiff=$((i + 20))
+      case ${hex:tiff:4} in
+        4949) le=1 ;;
+        4d4d) le=0 ;;
+        *) return 0 ;;
+      esac
+      ifd=${hex:tiff+8:8}
+      ((${#ifd} == 8)) || return 0
+      ((le)) && ifd=${ifd:6:2}${ifd:4:2}${ifd:2:2}${ifd:0:2}
+      ifd=$((tiff + 16#$ifd * 2))
+      n=${hex:ifd:4}
+      ((${#n} == 4)) || return 0
+      ((le)) && n=${n:2:2}${n:0:2}
+      n=$((16#$n))
+      ((n > 64)) && n=64
+      for ((k = 0; k < n; k++)); do
+        e=$((ifd + 4 + k * 24))
+        tag=${hex:e:4}
+        val=${hex:e+16:4}
+        ((${#val} == 4)) || return 0
+        if ((le)); then tag=${tag:2:2}${tag:0:2}; val=${val:2:2}${val:0:2}; fi
+        if [[ $tag == 0112 ]]; then
+          val=$((16#$val))
+          ((val >= 1 && val <= 8)) && printf '%d\n' "$val"
+          return 0
+        fi
+      done
+      return 0
+    fi
+    i=$((i + 4 + len * 2))
+  done
+  return 0
+}
+
+# apply_orientation SRC DST OP - losslessly rotate/flip a JPEG with jpegtran.
+# When the size is not a multiple of the JPEG block size a perfect transform is
+# impossible; the partial edge blocks (at most 15 pixels) are then dropped.
+apply_orientation() {
+  local -a op
+  read -r -a op <<<"$3"
+  jpegtran -copy icc -perfect "${op[@]}" -outfile "$2" "$1" 2>/dev/null ||
+    jpegtran -copy icc -trim "${op[@]}" -outfile "$2" "$1" 2>/dev/null
+}
+
+# process SRC DEST_DIR - convert one image.
+process() {
+  local src=$1 dest_dir=$2
+  local mime info base out w=0 h=0 t orient="" jt_op="" work tmp rc
+  local -a resize=() enc=()
+
+  [[ -f $src && -r $src ]] || { fail "$src" "not a readable file"; return; }
+
+  mime=$(file -b --mime-type -- "$src" 2>/dev/null) || mime=""
+  case $mime in
+    image/jpeg|image/png) ;;
+    *) skip "$src" "not a JPEG or PNG"; return ;;
+  esac
+
+  if [[ $mime == image/png ]] && head -c 4096 -- "$src" | grep -aq 'acTL'; then
+    skip "$src" "animated PNG is not supported"
+    return
+  fi
+
+  base=${src##*/}
+  out="$dest_dir/${base%.*}.webp"
+
+  if [[ -n ${claimed[$out]:-} ]]; then
+    skip "$src" "output name already used by ${claimed[$out]}"
+    return
+  fi
+  claimed[$out]=$src
+
+  if [[ -e $out ]] && ((!force)) && [[ ! $src -nt $out ]]; then
+    skip "$src" "up to date"
+    return
+  fi
+
+  info=$(file -b -- "$src" 2>/dev/null) || info=""
+  if [[ $mime == image/png && $info =~ ,\ ([0-9]+)\ x\ ([0-9]+), ]] ||
+     [[ $mime == image/jpeg && $info =~ ,\ ([0-9]+)x([0-9]+),\ components ]]; then
+    w=${BASH_REMATCH[1]}
+    h=${BASH_REMATCH[2]}
+  fi
+
+  # EXIF orientation (JPEG only): rotate the pixels so no viewer has to.
+  if [[ $mime == image/jpeg ]]; then
+    orient=$(exif_orientation "$src")
+    case $orient in
+      2) jt_op="-flip horizontal" ;;
+      3) jt_op="-rotate 180" ;;
+      4) jt_op="-flip vertical" ;;
+      5) jt_op="-transpose" ;;
+      6) jt_op="-rotate 90" ;;
+      7) jt_op="-transverse" ;;
+      8) jt_op="-rotate 270" ;;
+    esac
+    case $orient in
+      5|6|7|8) t=$w; w=$h; h=$t ;;
+    esac
+  fi
+  if [[ -n $jt_op ]] && ! command -v jpegtran >/dev/null 2>&1; then
+    fail "$src" "has EXIF orientation $orient but jpegtran is missing (dnf install libjpeg-turbo-utils)"
+    return
+  fi
+
+  # Resize: fit inside max_width x max_height, keep aspect ratio, never upscale.
+  if ((max_width > 0 || max_height > 0)); then
+    if ((w == 0 || h == 0)); then
+      fail "$src" "cannot read image dimensions, refusing to resize blindly"
+      return
+    fi
+    local over_w=0 over_h=0
+    ((max_width > 0 && w > max_width)) && over_w=1
+    ((max_height > 0 && h > max_height)) && over_h=1
+    if ((over_w && over_h)); then
+      # Pick the tighter constraint: w/max_width vs h/max_height.
+      if ((w * max_height >= h * max_width)); then over_h=0; else over_w=0; fi
+    fi
+    if ((over_w)); then
+      resize=(-resize "$max_width" 0)
+    elif ((over_h)); then
+      resize=(-resize 0 "$max_height")
+    fi
+  fi
+
+  if ((dry_run)); then
+    n_converted=$((n_converted + 1))
+    say "would    $src -> $out${resize[*]:+ (${resize[*]})}${jt_op:+ (apply EXIF orientation $orient)}"
+    return
+  fi
+
+  if ! mkdir -p -- "$dest_dir"; then
+    fail "$src" "cannot create $dest_dir"
+    return
+  fi
+
+  work=$src
+  if [[ -n $jt_op ]]; then
+    work=$(mktemp "${TMPDIR:-/tmp}/webpopt.XXXXXXXX") || { fail "$src" "mktemp failed"; return; }
+    tmp_files+=("$work")
+    if ! apply_orientation "$src" "$work" "$jt_op"; then
+      rm -f -- "$work"
+      fail "$src" "jpegtran could not apply EXIF orientation $orient"
+      return
+    fi
+  fi
+
+  tmp=$(mktemp "$dest_dir/.webpopt.XXXXXXXX") || { fail "$src" "cannot write to $dest_dir"; return; }
+  tmp_files+=("$tmp")
+
+  enc=(-quiet -mt -q "$quality" -m "$effort" -metadata "$metadata")
+  ((lossless)) && enc+=(-lossless)
+  cwebp "${enc[@]}" "${resize[@]}" -o "$tmp" -- "$work" >/dev/null 2>&1
+  rc=$?
+  [[ $work != "$src" ]] && rm -f -- "$work"
+  if ((rc != 0)) || [[ ! -s $tmp ]]; then
+    rm -f -- "$tmp"
+    fail "$src" "cwebp failed (exit $rc)"
+    return
+  fi
+
+  local s_src s_new
+  s_src=$(stat -c %s -- "$src")
+  s_new=$(stat -c %s -- "$tmp")
+  if ((s_new * 100 > s_src * (100 - min_savings) || s_new >= s_src)); then
+    rm -f -- "$tmp"
+    skip "$src" "WebP not small enough: $(human "$s_new") vs $(human "$s_src"), original kept as is"
+    return
+  fi
+
+  chmod 644 -- "$tmp" 2>/dev/null
+  if ! mv -f -- "$tmp" "$out"; then
+    rm -f -- "$tmp"
+    fail "$src" "cannot write $out"
+    return
+  fi
+
+  n_converted=$((n_converted + 1))
+  bytes_before=$((bytes_before + s_src))
+  bytes_after=$((bytes_after + s_new))
+  say "ok       $src -> $out  $(human "$s_src") -> $(human "$s_new") (-$(((s_src - s_new) * 100 / s_src))%)"
+}
+
+process_dir() {
+  local dir=${1%/} f rel dest
+  local -a depth=()
+  ((recursive)) || depth=(-maxdepth 1)
+  while IFS= read -r -d '' f; do
+    if [[ -n $output_dir ]]; then
+      rel=${f#"$dir"/}
+      dest=$output_dir
+      [[ $rel == */* ]] && dest="$output_dir/${rel%/*}"
+    else
+      dest=${f%/*}
+    fi
+    process "$f" "$dest"
+  done < <(find "$dir" "${depth[@]}" \
+             \( -name .git -o -name node_modules \) -prune -o \
+             -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' \) -print0 | sort -z)
+}
+
+# ---- command line ----------------------------------------------------------
+
+inputs=()
+cli_opts=()   # applied after the config file so the command line wins
+
+need_arg() { (($2 >= 2)) || die 2 "option $1 needs a value"; }
+
+while (($# > 0)); do
+  case $1 in
+    -q|--quality)     need_arg "$1" $#; cli_opts+=(quality "$2"); shift ;;
+    -e|--effort)      need_arg "$1" $#; cli_opts+=(effort "$2"); shift ;;
+    -w|--max-width)   need_arg "$1" $#; cli_opts+=(max_width "$2"); shift ;;
+    -H|--max-height)  need_arg "$1" $#; cli_opts+=(max_height "$2"); shift ;;
+    --metadata)       need_arg "$1" $#; cli_opts+=(metadata "$2"); shift ;;
+    --min-savings)    need_arg "$1" $#; cli_opts+=(min_savings "$2"); shift ;;
+    -o|--output-dir)  need_arg "$1" $#; output_dir=$2; shift ;;
+    --config)         need_arg "$1" $#; config_file=$2; shift ;;
+    --no-config)      use_config=0 ;;
+    --lossless)       cli_opts+=(lossless 1) ;;
+    -r|--recursive)   cli_opts+=(recursive 1) ;;
+    -f|--force)       force=1 ;;
+    -n|--dry-run)     dry_run=1 ;;
+    -Q|--quiet)       quiet=1 ;;
+    -V|--version)     printf '%s %s\n' "$PROG" "$VERSION"; exit 0 ;;
+    -h|--help)        usage; exit 0 ;;
+    --)               shift; inputs+=("$@"); break ;;
+    -?*)              die 2 "unknown option: $1 (try --help)" ;;
+    *)                inputs+=("$1") ;;
+  esac
+  shift
+done
+
+if ((use_config)); then
+  [[ -n $config_file ]] || config_file=$(find_config) || config_file=""
+  if [[ -n $config_file ]]; then
+    load_config "$config_file"
+    say "config   $config_file"
+  fi
+fi
+for ((i = 0; i < ${#cli_opts[@]}; i += 2)); do
+  set_opt "${cli_opts[i]}" "${cli_opts[i + 1]}" "command line"
+done
+
+((${#inputs[@]} > 0)) || { usage >&2; exit 2; }
+
+for dep in cwebp file find stat mktemp sort; do
+  command -v "$dep" >/dev/null 2>&1 ||
+    die 3 "missing dependency: $dep (on Fedora: sudo dnf install libwebp-tools file)"
+done
+
+if [[ -n $output_dir ]]; then
+  output_dir=${output_dir%/}
+  [[ -n $output_dir ]] || output_dir=/
+  [[ $output_dir == -* ]] && output_dir="./$output_dir"
+fi
+
+for p in "${inputs[@]}"; do
+  [[ $p == -* ]] && p="./$p"
+  if [[ -d $p ]]; then
+    process_dir "$p"
+  elif [[ -e $p ]]; then
+    d=.
+    [[ $p == */* ]] && d=${p%/*}
+    [[ -n $d ]] || d=/
+    process "$p" "${output_dir:-$d}"
+  else
+    fail "$p" "no such file or directory"
+  fi
+done
+
+verb="converted"
+((dry_run)) && verb="would convert"
+summary="$verb $n_converted, skipped $n_skipped, failed $n_failed"
+if ((bytes_before > 0)); then
+  summary+=", saved $(human $((bytes_before - bytes_after))) of $(human "$bytes_before")"
+fi
+say "$summary"
+
+((n_failed == 0)) || exit 1
+exit 0
