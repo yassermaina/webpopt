@@ -1,5 +1,7 @@
 # webpopt
 
+[![tests](https://github.com/yassermaina/webpopt/actions/workflows/tests.yml/badge.svg)](https://github.com/yassermaina/webpopt/actions/workflows/tests.yml)
+
 A small, Fedora-first command-line tool that converts JPEG and PNG images to
 optimized WebP, plus a portable **Agent Skill** so coding agents (Claude Code,
 Codex CLI and other skill-compatible agents) can prepare website images the
@@ -8,16 +10,17 @@ same way.
 - One Bash script on top of `cwebp` (libwebp). No ImageMagick, no runtime.
 - Quality **80**, compression effort **6** by default; both configurable.
 - Optional shrink-to-fit resize: no cropping, aspect ratio kept, never upscales.
-- Keeps transparency, applies EXIF orientation, never touches the originals.
+- Keeps transparency, applies EXIF orientation losslessly, never touches the originals.
 - Skips work that is not needed and discards a WebP that is not smaller.
+- Never overwrites a `.webp` it did not create; name clashes get `photo-1.webp`, `photo-2.webp`, ….
 
 ## Install (Fedora)
 
 ```sh
-curl -fsSLO https://github.com/yassermaina/webpopt/releases/download/v0.1.0/webpopt-0.1.0.tar.gz
-curl -fsSLO https://github.com/yassermaina/webpopt/releases/download/v0.1.0/webpopt-0.1.0.tar.gz.sha256
-sha256sum -c webpopt-0.1.0.tar.gz.sha256
-tar xzf webpopt-0.1.0.tar.gz && cd webpopt-0.1.0
+curl -fsSLO https://github.com/yassermaina/webpopt/releases/download/v0.1.1/webpopt-0.1.1.tar.gz
+curl -fsSLO https://github.com/yassermaina/webpopt/releases/download/v0.1.1/webpopt-0.1.1.tar.gz.sha256
+sha256sum -c webpopt-0.1.1.tar.gz.sha256
+tar xzf webpopt-0.1.1.tar.gz && cd webpopt-0.1.1
 ./install.sh --skill claude        # drop --skill to install the CLI only
 ```
 
@@ -68,10 +71,14 @@ Output:
 
 ```
 ok       src/img/hero.jpg -> src/img/hero.webp  412.0K -> 118.3K (-71%)
-skip     src/img/logo.png (WebP not small enough: 3.1K vs 2.4K, original kept as is)
-skip     src/img/team.jpg (up to date)
+skip     src/img/logo.png (WebP not smaller: 3.1K vs 2.4K, keep using the original)
+skip     src/img/team.jpg (up to date: src/img/team.webp)
 converted 1, skipped 2, failed 0, saved 293.7K of 412.0K
 ```
+
+A `skip` other than "up to date" means there is no WebP for that image: keep
+using the original. `--force` only bypasses the up-to-date check; it never
+keeps a WebP that is not smaller.
 
 Exit status: `0` success (skips included), `1` at least one file failed,
 `2` usage or config error, `3` missing dependency.
@@ -81,11 +88,36 @@ Exit status: `0` success (skips included), `1` at least one file failed,
 - Originals are never modified, moved or deleted.
 - A file is only converted if its content is really JPEG or PNG.
 - An existing `.webp` that is newer than its source is left alone (`--force` overrides).
-- A WebP that is not smaller than the source is discarded.
+- A WebP that is not smaller than the source is discarded and reported as `skip`.
 - Images are only ever made smaller, with the aspect ratio intact.
-- JPEG EXIF orientation is baked into the pixels (lossless `jpegtran` transform).
+- JPEG EXIF orientation is baked into the pixels with a lossless `jpegtran`
+  transform. If that is not possible without losing edge pixels, the image is
+  skipped; nothing is ever trimmed.
 - EXIF/XMP metadata (including GPS) is dropped by default; the ICC color profile is kept.
-- Two sources that would produce the same output name are not silently merged; the second is skipped.
+- A `.webp` that webpopt did not create is never overwritten (see below).
+
+### Output names
+
+The output keeps the source's name: `photo.jpg` → `photo.webp`. If that name is
+not available — another source such as `photo.png` already owns it, or an
+unrelated `photo.webp` is in the way — the next free name is used:
+`photo-1.webp`, `photo-2.webp`, …
+
+Each output directory gets a small text file, `.webpopt-names`, listing every
+output and the source it belongs to:
+
+```
+photo.webp	photo.jpg
+photo-1.webp	photo.png
+```
+
+This record is what keeps names stable: re-running, in any order and after
+editing a source, always updates the same file and never creates extra copies.
+Keep the file with the images and commit it. Within one run the first source
+gets the plain name (directories are processed in sorted order). An existing
+`<name>.webp` with no record is adopted only if it is not older than the
+source (so it is not rewritten at that point); otherwise it is treated as
+someone else's file and left alone.
 
 The full behavior is specified in [CONTRACT.md](CONTRACT.md).
 
@@ -118,11 +150,15 @@ JPEG/PNG) and when it is not (SVG, GIF, icons, existing pipelines, …).
 | Scope | Claude Code | Codex CLI / other agents |
 | --- | --- | --- |
 | Global (all projects) | `./install.sh --skill claude` → `~/.claude/skills/` | `./install.sh --skill codex` → `~/.codex/skills/`, or `--skill agents` → `~/.agents/skills/` |
-| One project | `./install.sh --skill /path/to/project/.claude/skills` | `./install.sh --skill /path/to/project/.agents/skills` |
+| One project | `./install.sh --skill /path/to/project/.claude/skills` | `./install.sh --skill /path/to/project/.agents/skills` (or `.codex/skills`) |
 
 Manual install is a plain copy: `cp -r skills/webp-optimizer <skills-dir>/`.
 Skill directory locations differ between agents and versions; if yours is not
 listed, check its documentation and pass the directory to `--skill`.
+
+Verified for 0.1.1: Claude Code 2.1 discovers the Skill in a project's
+`.claude/skills`; Codex CLI 0.169 discovers it in `~/.codex/skills`,
+`~/.agents/skills` and a project's `.codex/skills` and `.agents/skills`.
 
 ### Encouraging automatic use
 
@@ -149,7 +185,8 @@ tests/run.sh
 ```
 
 Plain Bash, no framework. Needs `cwebp`, `webpinfo`, `dwebp` (all in
-`libwebp-tools`), `jpegtran` and `file`.
+`libwebp-tools`), `jpegtran` and `file`. GitHub Actions runs ShellCheck and
+this suite in a Fedora container on every push.
 
 ## Uninstall
 
@@ -161,20 +198,23 @@ rm -rf ~/.claude/skills/webp-optimizer ~/.codex/skills/webp-optimizer ~/.agents/
 sudo dnf remove libwebp-tools libjpeg-turbo-utils
 ```
 
-`webpopt` keeps no state, cache or configuration outside your projects.
-Generated `.webp` files and `.webpopt.conf` files are yours and are left alone.
+`webpopt` keeps nothing outside your projects. Generated `.webp` files and the
+`.webpopt-names` and `.webpopt.conf` files next to them are yours and are left alone.
 
 ## Limitations
 
 - Input formats are JPEG and PNG only; animated PNG is skipped.
-- A rotated JPEG whose size is not a multiple of its block size (8 or 16 px)
-  cannot be rotated perfectly without re-decoding; up to 15 pixels on an edge
-  are trimmed in that case.
+- A JPEG with an EXIF rotation whose size is not a multiple of its block size
+  (8 or 16 px) cannot be rotated losslessly. It is skipped and the original
+  stays in use; rotate it in an image editor first if you need a WebP.
 - EXIF orientation stored inside a PNG is ignored.
-- `photo.jpg` and `photo.png` in one directory both map to `photo.webp`; only
-  the first is converted.
-- A source whose WebP was discarded as "not small enough" is re-tried on every
-  run, since no marker file is written.
+- Output names depend on `.webpopt-names`. If that file is deleted, outputs
+  older than their source are no longer recognized and get a new suffixed name
+  on the next run (nothing is overwritten).
+- Renaming or moving a source leaves its old `.webp` and record behind.
+- File names containing a tab or newline are rejected.
+- A source whose WebP was discarded as not smaller is re-encoded and discarded
+  again on every run.
 - Files are processed one at a time (cwebp itself is multi-threaded).
 
 ## License

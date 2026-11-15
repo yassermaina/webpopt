@@ -6,9 +6,10 @@ set -u
 set -o pipefail
 export LC_ALL=C
 
-VERSION="0.1.0"
+VERSION="0.1.1"
 PROG="webpopt"
 CONFIG_NAME=".webpopt.conf"
+NAMES_FILE=".webpopt-names"
 
 # Defaults (overridden by config file, then by command-line options).
 quality=80
@@ -32,7 +33,10 @@ n_skipped=0
 n_failed=0
 bytes_before=0
 bytes_after=0
-declare -A claimed=()
+declare -A name_of=()      # "<dest dir>//<source key>" -> output file name
+declare -A owner_of=()     # "<dest dir>//<output name>" -> source key
+declare -A on_disk=()      # "<dest dir>//<source key>" -> 1 once written to NAMES_FILE
+declare -A names_loaded=() # "<dest dir>" -> 1 once its NAMES_FILE was read
 tmp_files=()
 
 usage() {
@@ -60,8 +64,11 @@ Options:
   -h, --help            Print this help
 
 Originals are never modified or deleted. A WebP that is not smaller than its
-source is discarded. Settings may also come from a $CONFIG_NAME file in the
-current directory or any parent directory.
+source is discarded and reported as "skip": keep using the original then.
+Sources that share a name (photo.jpg, photo.png) get photo.webp, photo-1.webp,
+...; the mapping is remembered in a $NAMES_FILE file next to the outputs.
+Settings may also come from a $CONFIG_NAME file in the current directory or
+any parent directory.
 
 Exit status: 0 ok, 1 at least one file failed, 2 usage/config error,
 3 missing dependency.
@@ -72,6 +79,7 @@ say()  { ((quiet)) || printf '%s\n' "$*"; }
 warn() { printf '%s: %s\n' "$PROG" "$*" >&2; }
 die()  { warn "$2"; exit "$1"; }
 
+# shellcheck disable=SC2329  # invoked through the EXIT trap
 cleanup() {
   local f
   for f in "${tmp_files[@]:-}"; do
@@ -205,19 +213,100 @@ exif_orientation() {
 }
 
 # apply_orientation SRC DST OP - losslessly rotate/flip a JPEG with jpegtran.
-# When the size is not a multiple of the JPEG block size a perfect transform is
-# impossible; the partial edge blocks (at most 15 pixels) are then dropped.
+# Only a perfect transform is accepted: when the size is not a multiple of the
+# JPEG block size jpegtran would have to drop edge pixels, so it is refused.
+# Returns 0 on success, 2 if a perfect transform is impossible, 1 on error.
 apply_orientation() {
+  local msg
   local -a op
   read -r -a op <<<"$3"
-  jpegtran -copy icc -perfect "${op[@]}" -outfile "$2" "$1" 2>/dev/null ||
-    jpegtran -copy icc -trim "${op[@]}" -outfile "$2" "$1" 2>/dev/null
+  msg=$(jpegtran -copy icc -perfect "${op[@]}" -outfile "$2" "$1" 2>&1) && return 0
+  [[ $msg == *"not perfect"* ]] && return 2
+  return 1
+}
+
+# ---- output names ----------------------------------------------------------
+# Every output is recorded in "<dest dir>/$NAMES_FILE" as "name<TAB>source",
+# the source being relative to that directory. The record is what makes names
+# stable across runs and tells our own outputs apart from unrelated files.
+
+load_names() {
+  local dir=$1 line name key
+  [[ -n ${names_loaded[$dir]:-} ]] && return 0
+  names_loaded[$dir]=1
+  [[ -f $dir/$NAMES_FILE && -r $dir/$NAMES_FILE ]] || return 0
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ $line == *$'\t'* ]] || continue
+    name=${line%%$'\t'*}
+    key=${line#*$'\t'}
+    [[ -n $name && -n $key && $name != */* ]] || continue
+    [[ -n ${name_of[$dir//$key]:-} || -n ${owner_of[$dir//$name]:-} ]] && continue
+    name_of[$dir//$key]=$name
+    owner_of[$dir//$name]=$key
+    on_disk[$dir//$key]=1
+  done <"$dir/$NAMES_FILE"
+}
+
+# save_name DIR KEY - persist the in-memory record for KEY (no-op if saved).
+save_name() {
+  local dir=$1 key=$2 file="$1/$NAMES_FILE"
+  [[ -n ${on_disk[$dir//$key]:-} ]] && return 0
+  if [[ ! -e $file ]]; then
+    printf '# webpopt output names (output, then its source). Keep this file with the images.\n' >"$file" 2>/dev/null
+  fi
+  if printf '%s\t%s\n' "${name_of[$dir//$key]}" "$key" >>"$file" 2>/dev/null; then
+    on_disk[$dir//$key]=1
+  else
+    warn "warning: cannot update $file; output names may change on the next run"
+  fi
+}
+
+# resolve_output SRC DEST_DIR - choose the output file for SRC.
+# Sets the globals out (path) and out_key. Returns 1 for unsupported names.
+resolve_output() {
+  local src=$1 dir=$2 base stem sdir=. name k=0 taken e
+  base=${src##*/}
+  stem=${base%.*}
+  [[ $src == */* ]] && sdir=${src%/*}
+  load_names "$dir"
+  out_key=$(realpath -m -s --relative-to="$dir" -- "$src" 2>/dev/null) || out_key=$src
+  [[ $out_key == *[$'\t\n']* ]] && return 1
+
+  name=${name_of[$dir//$out_key]:-}
+  if [[ -z $name ]]; then
+    name="$stem.webp"
+    while :; do
+      taken=0
+      if [[ -n ${owner_of[$dir//$name]:-} ]]; then
+        taken=1                       # belongs to another source
+      elif [[ -e $dir/$name || -L $dir/$name ]]; then
+        # Unrecorded file. Only the plain "<stem>.webp" of a source that is
+        # not newer is adopted (it is up to date, so nothing is overwritten).
+        ((k == 0)) && [[ -f $dir/$name && ! $src -nt $dir/$name ]] || taken=1
+      elif ((k > 0)); then
+        # Leave "<stem>-<k>.webp" to a source that is really called that.
+        for e in jpg jpeg png JPG JPEG PNG; do
+          [[ -e $sdir/$stem-$k.$e ]] && taken=1
+        done
+      fi
+      ((taken)) || break
+      k=$((k + 1))
+      name="$stem-$k.webp"
+    done
+    name_of[$dir//$out_key]=$name
+    owner_of[$dir//$name]=$out_key
+  fi
+  out="$dir/$name"
+}
+
+lossy_rotation_reason() {
+  printf 'EXIF orientation %s cannot be applied without losing edge pixels, keep using the original' "$1"
 }
 
 # process SRC DEST_DIR - convert one image.
 process() {
   local src=$1 dest_dir=$2
-  local mime info base out w=0 h=0 t orient="" jt_op="" work tmp rc
+  local mime info w=0 h=0 t orient="" jt_op="" work tmp rc stale=""
   local -a resize=() enc=()
 
   [[ -f $src && -r $src ]] || { fail "$src" "not a readable file"; return; }
@@ -233,18 +322,18 @@ process() {
     return
   fi
 
-  base=${src##*/}
-  out="$dest_dir/${base%.*}.webp"
-
-  if [[ -n ${claimed[$out]:-} ]]; then
-    skip "$src" "output name already used by ${claimed[$out]}"
+  if ! resolve_output "$src" "$dest_dir"; then
+    fail "$src" "file names containing tabs or newlines are not supported"
     return
   fi
-  claimed[$out]=$src
 
-  if [[ -e $out ]] && ((!force)) && [[ ! $src -nt $out ]]; then
-    skip "$src" "up to date"
-    return
+  if [[ -e $out ]]; then
+    if ((!force)) && [[ ! $src -nt $out ]]; then
+      ((dry_run)) || save_name "$dest_dir" "$out_key"
+      skip "$src" "up to date: $out"
+      return
+    fi
+    [[ $src -nt $out ]] && stale=", existing $out is out of date"
   fi
 
   info=$(file -b -- "$src" 2>/dev/null) || info=""
@@ -296,6 +385,13 @@ process() {
   fi
 
   if ((dry_run)); then
+    if [[ -n $jt_op ]]; then
+      apply_orientation "$src" /dev/null "$jt_op"
+      if (($? == 2)); then
+        skip "$src" "$(lossy_rotation_reason "$orient")"
+        return
+      fi
+    fi
     n_converted=$((n_converted + 1))
     say "would    $src -> $out${resize[*]:+ (${resize[*]})}${jt_op:+ (apply EXIF orientation $orient)}"
     return
@@ -310,9 +406,15 @@ process() {
   if [[ -n $jt_op ]]; then
     work=$(mktemp "${TMPDIR:-/tmp}/webpopt.XXXXXXXX") || { fail "$src" "mktemp failed"; return; }
     tmp_files+=("$work")
-    if ! apply_orientation "$src" "$work" "$jt_op"; then
+    apply_orientation "$src" "$work" "$jt_op"
+    rc=$?
+    if ((rc != 0)); then
       rm -f -- "$work"
-      fail "$src" "jpegtran could not apply EXIF orientation $orient"
+      if ((rc == 2)); then
+        skip "$src" "$(lossy_rotation_reason "$orient")"
+      else
+        fail "$src" "jpegtran could not apply EXIF orientation $orient"
+      fi
       return
     fi
   fi
@@ -336,7 +438,9 @@ process() {
   s_new=$(stat -c %s -- "$tmp")
   if ((s_new * 100 > s_src * (100 - min_savings) || s_new >= s_src)); then
     rm -f -- "$tmp"
-    skip "$src" "WebP not small enough: $(human "$s_new") vs $(human "$s_src"), original kept as is"
+    local why="WebP not smaller"
+    ((s_new < s_src)) && why="WebP saves less than $min_savings%"
+    skip "$src" "$why: $(human "$s_new") vs $(human "$s_src"), keep using the original$stale"
     return
   fi
 
@@ -347,6 +451,7 @@ process() {
     return
   fi
 
+  save_name "$dest_dir" "$out_key"
   n_converted=$((n_converted + 1))
   bytes_before=$((bytes_before + s_src))
   bytes_after=$((bytes_after + s_new))

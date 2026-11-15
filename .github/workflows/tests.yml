@@ -1,0 +1,22 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - name: Install dependencies
+        run: dnf install -y --setopt=install_weak_deps=False git libwebp-tools libjpeg-turbo-utils file ShellCheck
+      - uses: actions/checkout@v4
+      - name: ShellCheck
+        run: shellcheck skills/webp-optimizer/scripts/webpopt install.sh tools/package.sh tests/run.sh
+      - name: Tests
+        run: tests/run.sh

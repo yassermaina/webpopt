@@ -17,14 +17,16 @@ bin/webpopt                             symlink to the CLI
 install.sh                              Fedora installer (CLI + optional Skill)
 tools/package.sh                        builds dist/webpopt-<version>.tar.gz + .sha256
 tests/run.sh, tests/fixtures/           test suite and its tiny images
+.github/workflows/tests.yml             CI: ShellCheck + tests in a Fedora container
 examples/                               sample .webpopt.conf and project instructions
 ```
 
 ## Setup and commands
 
 ```sh
-sudo dnf install libwebp-tools libjpeg-turbo-utils file   # once
+sudo dnf install libwebp-tools libjpeg-turbo-utils file ShellCheck   # once
 tests/run.sh                                              # must pass before committing
+shellcheck skills/webp-optimizer/scripts/webpopt install.sh tools/package.sh tests/run.sh
 bin/webpopt --help
 tools/package.sh                                          # release tarball in dist/
 ```
@@ -47,7 +49,11 @@ tools/package.sh                                          # release tarball in d
 ## Release checklist
 
 1. Bump `VERSION=` in the CLI; update `README.md` install URLs and `PROJECT_STATUS.md`.
-2. `tests/run.sh`
-3. Commit, `git tag vX.Y.Z`, push with tags.
+2. `tests/run.sh` and ShellCheck
+3. Commit, push, wait for CI to pass, then `git tag vX.Y.Z` and push the tag.
 4. `tools/package.sh`
 5. `gh release create vX.Y.Z dist/webpopt-X.Y.Z.tar.gz dist/webpopt-X.Y.Z.tar.gz.sha256`
+6. Download the published assets and check them with `sha256sum -c`.
+
+Never move or re-create an existing tag or replace the assets of a published
+release; fix forward with a new version.

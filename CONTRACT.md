@@ -20,6 +20,7 @@ network access, telemetry, parallel job scheduling.
 
 1. **Defaults**: quality 80, effort 6 (`cwebp -q 80 -m 6`), ICC profile kept,
    other metadata dropped, output next to the source as `<stem>.webp`.
+   Output naming is defined in section 3.
 2. **Precedence**: command line > `.webpopt.conf` > built-in defaults.
 3. **Input detection** is by file content (`file --mime-type`), not extension.
    Directory scans consider `*.jpg`, `*.jpeg`, `*.png` (any case), skip `.git`
@@ -29,17 +30,42 @@ network access, telemetry, parallel job scheduling.
    read while a limit is set, the file fails rather than being resized blindly.
 5. **Transparency** is preserved (cwebp alpha).
 6. **Orientation**: a JPEG EXIF orientation other than "normal" is applied to
-   the pixels with a lossless `jpegtran` transform before encoding. If
-   `jpegtran` is missing, that file fails; it is never written un-rotated.
+   the pixels with a perfect lossless `jpegtran` transform before encoding.
+   If a perfect transform is impossible (size not a multiple of the JPEG block
+   size) the image is skipped. Pixels are never trimmed, and an image is never
+   written un-rotated. If `jpegtran` is missing, that file fails.
 7. **Skips** (not errors): not a JPEG/PNG, animated PNG, output up to date
-   (output exists and source is not newer), output name already claimed in
-   this run, WebP not smaller than the source by at least `min_savings` %.
+   (output exists and source is not newer), orientation cannot be applied
+   losslessly, WebP not smaller than the source by at least `min_savings` %.
+   Every skip except "up to date" means no WebP exists for that source and
+   the original stays in use. `--force` bypasses only the up-to-date check.
 8. **Exit status**: 0 ok (skips included), 1 at least one file failed,
    2 usage/config error, 3 missing dependency.
 9. **Output lines** start with `ok`, `skip`, `would` or `FAILED`, followed by
    a one-line summary. Errors go to stderr.
 
-## 3. Safety rules
+## 3. Output names
+
+1. The output keeps the source's stem: `<stem>.webp`. If that name is not
+   available the first free name of `<stem>-1.webp`, `<stem>-2.webp`, … is used.
+2. Every output is recorded in `<output dir>/.webpopt-names` as
+   `name<TAB>source`, the source path being relative to that directory. A
+   source with a record always maps to its recorded name, in every later run,
+   regardless of argument order, `--force` or changes to the source.
+3. A name is unavailable when it is recorded for another source, when a file
+   of that name exists without a record, or (for suffixed names) when a source
+   with exactly that stem exists next to the source being converted.
+4. Exception to 3, for upgrades and hand-made outputs: an unrecorded plain
+   `<stem>.webp` that is not older than the source is adopted and recorded. It
+   is up to date at that moment, so adoption itself rewrites nothing.
+5. Within one run names are assigned in processing order: arguments left to
+   right, directory contents sorted bytewise.
+6. Only recorded outputs are ever replaced. An existing file without a record
+   is never overwritten, with or without `--force`.
+7. The record is plain text, appended to, never executed. File names
+   containing a tab or newline cannot be recorded and are rejected.
+
+## 4. Safety rules
 
 1. Source files are opened read-only. They are never modified, renamed, moved
    or deleted, by the CLI or by the Skill.
@@ -52,14 +78,16 @@ network access, telemetry, parallel job scheduling.
 5. The config file is parsed, never sourced or evaluated. Only known keys with
    validated values are accepted; anything else aborts with exit 2.
 6. All paths are quoted and passed after `--` or with a `./` prefix; file
-   names with spaces, newlines or leading dashes must work.
+   names with spaces or leading dashes must work.
 7. No network access, no `sudo`, no `eval`, no writes outside the destination
    directory and `$TMPDIR`. Only `install.sh` may call `sudo dnf`, and only for
    missing packages.
 8. The Skill never deletes originals, never bulk-converts beyond the task, and
-   never installs system packages on its own.
+   never installs system packages on its own. After any skip other than
+   "up to date" it keeps using the original image and does not try to obtain
+   a WebP by other means.
 
-## 4. Boundaries
+## 5. Boundaries
 
 - Runtime dependencies: `bash` ≥ 4.4, coreutils/findutils, `cwebp`, `file`;
   `jpegtran` only for rotated JPEGs. Adding a dependency needs a strong reason
@@ -73,14 +101,15 @@ network access, telemetry, parallel job scheduling.
 - Fedora is the reference platform. Other Linux distributions should work but
   are not tested.
 
-## 5. Development conventions
+## 6. Development conventions
 
 - Keep it small. Prefer deleting to adding; no feature without a test.
 - Bash style: `set -u`, `[[ ]]`, arrays for argument lists, quoted expansions,
-  two-space indent, `shellcheck`-clean where available.
+  two-space indent, ShellCheck-clean (enforced in CI).
 - Every behavior change updates `tests/run.sh`, `README.md`, `SKILL.md` and
   this contract as needed, in the same commit.
-- `tests/run.sh` must pass before every commit and release.
+- `tests/run.sh` and ShellCheck must pass before every commit and release;
+  `.github/workflows/tests.yml` runs both in a Fedora container.
 - Versioning: SemVer. The single source of truth is `VERSION=` in the script.
   Release = bump version, update `PROJECT_STATUS.md`, tag `vX.Y.Z`,
   `tools/package.sh`, publish the tarball and its `.sha256` as a GitHub Release.

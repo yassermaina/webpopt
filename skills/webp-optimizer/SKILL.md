@@ -53,14 +53,30 @@ If unsure whether optimization is wanted, ask once instead of guessing.
    `--max-width` only when you know the largest size the image is displayed at
    (use about twice the CSS width for high-density screens). Use `--lossless`
    for flat-color PNG artwork if the lossy result shows artifacts.
-4. Read the output. Each file is reported as `ok`, `skip` (with the reason) or
-   `FAILED`. A `skip ... not small enough` means the original is already the
-   better file: keep referencing the original and move on.
-5. Point the page at the new `.webp` only for files reported `ok`, and only in
-   files that belong to the current task. Keep `width`/`height` attributes in
-   sync with the real dimensions if the image was resized.
+4. Read the output, one line per file:
+
+   ```
+   ok       img/hero.jpg -> img/hero.webp  412.0K -> 118.3K (-71%)
+   ok       img/logo.png -> img/logo-1.webp  ...
+   skip     img/icon.png (WebP not smaller: 1.1K vs 792B, keep using the original)
+   FAILED   img/broken.jpg: cwebp failed (exit 1)
+   ```
+
+   - `ok`: the WebP exists at the path printed after `->`. Use exactly that
+     path; it can carry a suffix (`logo-1.webp`) when another image already
+     owns `logo.webp`. Never guess the output name.
+   - `skip ... up to date: <path>`: a current WebP already exists at `<path>`;
+     use it.
+   - any other `skip` (not smaller, cannot be rotated without losing pixels,
+     not a JPEG/PNG, animated): there is **no** WebP for this image. Keep
+     referencing the original file. Do not retry with `--force`, lower quality
+     or another tool to get a WebP anyway.
+   - `FAILED`: keep the original and report the error.
+5. Point the page at the new `.webp` only for `ok` / `up to date` files, and
+   only in files that belong to the current task. Keep `width`/`height`
+   attributes in sync with the real dimensions if the image was resized.
 6. Report briefly: which files were converted, the size change, and anything
-   skipped or failed.
+   skipped or failed (with the reason).
 
 Run `webpopt --help` for the full option list.
 
@@ -71,6 +87,8 @@ Run `webpopt --help` for the full option list.
 - Never bulk-convert a whole repository unprompted; stay within the images the
   task touches unless the user asks for a wider pass.
 - Do not edit `.webpopt.conf` unless asked; it holds the user's preferences.
+- Leave `.webpopt-names` files alone and keep them with the images (commit
+  them): they record which source each `.webp` belongs to.
 - Do not rewrite references in files outside the task's scope.
 - Do not substitute ImageMagick, ffmpeg or online services for `webpopt`.
 
