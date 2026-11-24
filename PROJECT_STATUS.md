@@ -1,10 +1,13 @@
 # Project Status
 
-**Version:** 0.1.1 (2026-11-15) — final maintenance release.
-**State:** complete and released; no work in progress.
+**Version:** 0.2.0 on branch `cachyos` (2026-11-24, not released; `main` is 0.1.1, 2026-11-15).
+**State:** 0.1.1 complete and released; 0.2.0 is the local CachyOS/NativePress work.
 
 ## Releases
 
+- **0.2.0** (branch `cachyos`, unreleased) — WordPress/NativePress workflow:
+  Media Library import guidance, config key `output_dir`, `--init`, theme-path
+  warning, per-site `max_width` guidance; Arch/CachyOS support.
 - **0.1.1** — EXIF rotation is lossless-only (images that cannot be rotated
   without losing pixels are skipped, never trimmed); name clashes get
   `-1`, `-2`, … suffixes recorded in `.webpopt-names`; unrelated `.webp`
