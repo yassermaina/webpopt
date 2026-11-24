@@ -10,7 +10,7 @@ Convert JPEG and PNG images to optimized WebP for websites, from the command
 line and through a portable Agent Skill.
 
 In scope: single files and batches, optional shrink-to-fit resize, a
-project-level preference file, a Fedora installer, the Skill.
+project-level preference file, an installer for Fedora and Arch/CachyOS, the Skill.
 
 Out of scope: other input or output formats (AVIF, GIF, SVG, animation),
 cropping or art direction, editing HTML/CSS, watch mode, daemons, GUIs,
@@ -45,7 +45,8 @@ network access, telemetry, parallel job scheduling.
 8. **Exit status**: 0 ok (skips included), 1 at least one file failed,
    2 usage/config error, 3 missing dependency.
 9. **Output lines** start with `ok`, `skip`, `would` or `FAILED`, followed by
-   a one-line summary. Errors go to stderr.
+   a one-line summary. Informational lines start with `config`, `wrote` or
+   `note`. Errors go to stderr.
 
 ## 3. Output names
 
@@ -101,8 +102,9 @@ network access, telemetry, parallel job scheduling.
 - The Skill is agent-neutral: no project-specific or vendor-specific
   assumptions in `SKILL.md` beyond the standard `name`/`description` front
   matter. User preferences belong in `.webpopt.conf`, not in the Skill.
-- Fedora is the reference platform. Other Linux distributions should work but
-  are not tested.
+- Fedora is the reference platform; Arch/CachyOS is also supported (installer
+  and test suite run there). Other Linux distributions should work but are not
+  tested.
 
 ## 6. Development conventions
 

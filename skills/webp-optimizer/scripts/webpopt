@@ -630,7 +630,7 @@ for p in "${inputs[@]}"; do
 done
 
 ((n_converted > 0 && !dry_run)) &&
-  say "note     next: import each .webp into the WordPress Media Library as an attachment and use its attachment ID in the theme/templates"
+  say "note     WordPress/NativePress: import each .webp into the Media Library as an attachment and use its attachment ID in the theme/templates"
 verb="converted"
 ((dry_run)) && verb="would convert"
 summary="$verb $n_converted, skipped $n_skipped, failed $n_failed"

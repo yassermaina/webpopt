@@ -84,8 +84,7 @@ If unsure whether optimization is wanted, ask once instead of guessing.
 6. Use the new `.webp` only for `ok` / `up to date` files, and only for the
    current task. In WordPress/NativePress, import the `.webp` into the
    WordPress Media Library as an attachment and use the attachment ID in the
-   theme/templates (for example through `npf_image` or
-   `wp_get_attachment_image`); never copy the `.webp` into the theme directory
+   theme/templates (for example through `wp_get_attachment_image`); never copy the `.webp` into the theme directory
    and never hard-code a file path. In a non-WordPress project, put the file
    where that project serves images and update the code that shows it, keeping
    `width`/`height` in sync if the image was resized.
@@ -101,6 +100,8 @@ Run `webpopt --help` for the full option list.
 - Never bulk-convert a whole repository unprompted; stay within the images the
   task touches unless the user asks for a wider pass.
 - Do not edit `.webpopt.conf` unless asked; it holds the user's preferences.
+  The only exception is creating a missing one with `webpopt --init`; never
+  overwrite an existing file.
 - Leave `.webpopt-names` files alone and keep them with the images in the
   source-assets folder (commit them there, not in a theme): they record which
   source each `.webp` belongs to.

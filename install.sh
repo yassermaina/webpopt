@@ -47,12 +47,12 @@ while (($# > 0)); do
 done
 
 # Package names differ by distribution.
-if command -v pacman >/dev/null 2>&1; then
+if command -v dnf >/dev/null 2>&1 || ! command -v pacman >/dev/null 2>&1; then
+  pkg_mgr=dnf   # Fedora first, so a stray pacman there cannot change its behavior
+  pkg_webp=libwebp-tools; pkg_jpeg=libjpeg-turbo-utils; pkg_file=file
+else
   pkg_mgr=pacman
   pkg_webp=libwebp-utils; pkg_jpeg=libjpeg-turbo; pkg_file=file
-else
-  pkg_mgr=dnf
-  pkg_webp=libwebp-tools; pkg_jpeg=libjpeg-turbo-utils; pkg_file=file
 fi
 
 missing=()
