@@ -27,6 +27,9 @@ quiet=0
 output_dir=""
 config_file=""
 use_config=1
+init=0
+config_output_dir=""
+theme_warned=0
 
 n_converted=0
 n_skipped=0
@@ -58,6 +61,8 @@ Options:
   -f, --force           Re-encode even when the .webp is up to date
   -n, --dry-run         Show what would happen without writing anything
       --config FILE     Use FILE instead of searching for $CONFIG_NAME
+      --init            Write a starter $CONFIG_NAME in the current directory
+                        (uses -w, -o, -q, -e if given; max_width defaults to 1920)
       --no-config       Ignore any $CONFIG_NAME file
   -Q, --quiet           Only print warnings and errors
   -V, --version         Print version
@@ -68,7 +73,15 @@ source is discarded and reported as "skip": keep using the original then.
 Sources that share a name (photo.jpg, photo.png) get photo.webp, photo-1.webp,
 ...; the mapping is remembered in a $NAMES_FILE file next to the outputs.
 Settings may also come from a $CONFIG_NAME file in the current directory or
-any parent directory.
+any parent directory (keys: quality, effort, max_width, max_height, lossless,
+metadata, min_savings, recursive, output_dir; output_dir is relative to the
+file, and -o overrides it).
+
+WordPress / NativePress: keep the originals and $NAMES_FILE in a source-assets
+folder outside the theme (for example <site>/source-assets/), choose max_width
+per site (WordPress builds its sub-sizes from the uploaded original), then
+import each .webp into the WordPress Media Library as an attachment and use the
+attachment ID in the theme/templates.
 
 Exit status: 0 ok, 1 at least one file failed, 2 usage/config error,
 3 missing dependency.
@@ -122,6 +135,33 @@ set_opt() {
   esac
 }
 
+# set_config_output_dir VALUE FILE ORIGIN - "output_dir" in a config file is a
+# relative path, resolved against the directory that holds that file.
+set_config_output_dir() {
+  local v=$1 file=$2 origin=$3 cdir=.
+  [[ -n $v ]] || die 2 "$origin: output_dir must not be empty"
+  [[ $v == /* ]] && die 2 "$origin: output_dir must be a relative path (relative to the config file)"
+  [[ /$v/ == */../* ]] && die 2 "$origin: output_dir must not contain '..'"
+  [[ $file == */* ]] && cdir=${file%/*}
+  [[ -n $cdir ]] || cdir=/
+  config_output_dir="${cdir%/}/${v%/}"
+}
+
+# warn_if_in_theme PATH... - once per run, warn when a path is inside a
+# WordPress theme: originals and $NAMES_FILE belong in a source-assets folder.
+warn_if_in_theme() {
+  local p r
+  ((theme_warned)) && return 0
+  for p in "$@"; do
+    r=$(realpath -m -- "$p" 2>/dev/null) || r=$p
+    if [[ $r == */wp-content/themes/* ]]; then
+      theme_warned=1
+      warn "warning: $p is inside a WordPress theme. Keep originals and $NAMES_FILE in a source-assets folder outside the theme, then import the .webp into the Media Library (see --help)"
+      return 0
+    fi
+  done
+}
+
 find_config() {
   local d=$PWD
   while :; do
@@ -144,8 +184,12 @@ load_config() {
     line=${line%%#*}
     line=${line%$'\r'}
     [[ $line =~ ^[[:space:]]*$ ]] && continue
-    if [[ $line =~ ^[[:space:]]*([a-z_]+)[[:space:]]*=[[:space:]]*([A-Za-z0-9]*)[[:space:]]*$ ]]; then
-      set_opt "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "$file:$n"
+    if [[ $line =~ ^[[:space:]]*([a-z_]+)[[:space:]]*=[[:space:]]*([A-Za-z0-9._/-]*)[[:space:]]*$ ]]; then
+      if [[ ${BASH_REMATCH[1]} == output_dir ]]; then
+        set_config_output_dir "${BASH_REMATCH[2]}" "$file" "$file:$n"
+      else
+        set_opt "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "$file:$n"
+      fi
     else
       die 2 "$file:$n: expected 'key = value'"
     fi
@@ -310,6 +354,7 @@ process() {
   local -a resize=() enc=()
 
   [[ -f $src && -r $src ]] || { fail "$src" "not a readable file"; return; }
+  warn_if_in_theme "$src" "$dest_dir"
 
   mime=$(file -b --mime-type -- "$src" 2>/dev/null) || mime=""
   case $mime in
@@ -478,6 +523,36 @@ process_dir() {
 
 # ---- command line ----------------------------------------------------------
 
+# write_init_config - create a starter $CONFIG_NAME in the current directory.
+write_init_config() {
+  local i w out_line="# output_dir = source-assets/webp   # relative to this file; -o overrides"
+  [[ -e $CONFIG_NAME ]] && die 2 "$CONFIG_NAME already exists here; edit it instead"
+  for ((i = 0; i < ${#cli_opts[@]}; i += 2)); do
+    set_opt "${cli_opts[i]}" "${cli_opts[i + 1]}" "command line"
+  done
+  w=$max_width
+  ((w > 0)) || w=1920
+  if [[ -n $output_dir ]]; then
+    [[ $output_dir =~ ^[A-Za-z0-9._/-]+$ && $output_dir != /* && /$output_dir/ != */../* ]] ||
+      die 2 "--init: -o must be a relative path of letters, digits, . _ - /"
+    out_line="output_dir = ${output_dir%/}"
+  fi
+  {
+    printf '# webpopt preferences for this site (plain "key = value"; never executed).\n'
+    printf '# max_width: WordPress builds its sub-sizes from the uploaded original, so\n'
+    printf '# choose it per site. About 1920 for a full-width hero, 1200 for content\n'
+    printf '# images, 600-800 for product thumbnails. Check the registered sizes with:\n'
+    printf '#   wp media image-size\n'
+    printf 'quality = %s\n' "$quality"
+    printf 'effort = %s\n' "$effort"
+    printf 'max_width = %s\n' "$w"
+    printf 'max_height = %s\n' "$max_height"
+    printf 'metadata = %s\n' "$metadata"
+    printf '%s\n' "$out_line"
+  } >"$CONFIG_NAME" || die 2 "cannot write $CONFIG_NAME"
+  say "wrote    $PWD/$CONFIG_NAME (originals and $NAMES_FILE stay outside the theme: use a source-assets folder)"
+}
+
 inputs=()
 cli_opts=()   # applied after the config file so the command line wins
 
@@ -494,6 +569,7 @@ while (($# > 0)); do
     -o|--output-dir)  need_arg "$1" $#; output_dir=$2; shift ;;
     --config)         need_arg "$1" $#; config_file=$2; shift ;;
     --no-config)      use_config=0 ;;
+    --init)           init=1 ;;
     --lossless)       cli_opts+=(lossless 1) ;;
     -r|--recursive)   cli_opts+=(recursive 1) ;;
     -f|--force)       force=1 ;;
@@ -508,6 +584,11 @@ while (($# > 0)); do
   shift
 done
 
+if ((init)); then
+  write_init_config
+  exit $?
+fi
+
 if ((use_config)); then
   [[ -n $config_file ]] || config_file=$(find_config) || config_file=""
   if [[ -n $config_file ]]; then
@@ -518,6 +599,8 @@ fi
 for ((i = 0; i < ${#cli_opts[@]}; i += 2)); do
   set_opt "${cli_opts[i]}" "${cli_opts[i + 1]}" "command line"
 done
+
+[[ -n $output_dir ]] || output_dir=$config_output_dir
 
 ((${#inputs[@]} > 0)) || { usage >&2; exit 2; }
 
@@ -546,6 +629,8 @@ for p in "${inputs[@]}"; do
   fi
 done
 
+((n_converted > 0 && !dry_run)) &&
+  say "note     next: import each .webp into the WordPress Media Library as an attachment and use its attachment ID in the theme/templates"
 verb="converted"
 ((dry_run)) && verb="would convert"
 summary="$verb $n_converted, skipped $n_skipped, failed $n_failed"

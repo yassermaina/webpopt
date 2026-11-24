@@ -264,6 +264,72 @@ printf 'colour = 3\n' >.webpopt.conf
 "$webpopt" -f photo.jpg >/dev/null 2>&1
 check "unknown config key is rejected (exit 2)" test $? -eq 2
 
+# --- per-site config: max_width, output_dir, --init ----------------------
+fresh
+printf 'max_width = 100\n' >.webpopt.conf
+"$webpopt" photo.jpg >/dev/null 2>&1
+check "per-site max_width is used" test "$(dims photo.webp)" = 100x75
+"$webpopt" -f -w 60 photo.jpg >/dev/null 2>&1
+check "-w overrides per-site max_width" test "$(dims photo.webp)" = 60x45
+small=$(mktemp -d "$tmp/small.XXXXXX"); cp "$fixtures/photo.jpg" "$small/"
+printf 'max_width = 5000\n' >"$small/.webpopt.conf"
+(cd "$small" && "$webpopt" photo.jpg >/dev/null 2>&1)
+check "max_width larger than the image does not upscale" test "$(dims "$small/photo.webp")" = 320x240
+printf 'max_width = abc\n' >.webpopt.conf
+"$webpopt" -f photo.jpg >"$tmp/out" 2>"$tmp/err"; rc=$?
+check "invalid max_width in config fails with exit 2 and names the file" \
+  eval 'test "$rc" -eq 2 && warned "\.webpopt\.conf:1: .max_width. must be a non-negative integer"'
+"$webpopt" -f --config "$tmp/does-not-exist.conf" photo.jpg >"$tmp/out" 2>"$tmp/err"; rc=$?
+check "missing --config file fails with exit 2 and a clear message" \
+  eval 'test "$rc" -eq 2 && warned "cannot read config file"'
+
+fresh
+mkdir -p site/source-assets/img site/wp-content/themes/t
+cp photo.jpg site/source-assets/img/
+printf 'max_width = 100\noutput_dir = source-assets/webp\n' >site/.webpopt.conf
+before=$(sums site/source-assets/img/photo.jpg)
+(cd site && "$webpopt" source-assets/img/photo.jpg >"$tmp/out" 2>"$tmp/err")
+check "config output_dir is relative to the config file" test -s site/source-assets/webp/photo.webp
+check ".webpopt-names is written beside the outputs, outside the theme" \
+  eval 'test -s site/source-assets/webp/.webpopt-names && test -z "$(find site/wp-content -type f)"'
+check "original is untouched and stays in source-assets" test "$(sums site/source-assets/img/photo.jpg)" = "$before"
+check "success prints the Media Library import step" grep -q "Media Library as an attachment" "$tmp/out"
+(cd site && "$webpopt" -o other source-assets/img/photo.jpg >/dev/null 2>&1)
+check "-o overrides config output_dir" test -s site/other/photo.webp
+printf 'output_dir = /abs\n' >site/.webpopt.conf
+(cd site && "$webpopt" source-assets/img/photo.jpg >"$tmp/out" 2>"$tmp/err"); rc=$?
+check "absolute output_dir in config is rejected (exit 2)" test "$rc" -eq 2
+printf 'output_dir = ../up\n' >site/.webpopt.conf
+(cd site && "$webpopt" source-assets/img/photo.jpg >"$tmp/out" 2>"$tmp/err"); rc=$?
+check "output_dir with .. is rejected (exit 2)" test "$rc" -eq 2
+rm site/.webpopt.conf
+run -o site/wp-content/themes/t site/source-assets/img/photo.jpg
+check "writing into a theme still works but warns" \
+  eval 'test "$rc" -eq 0 && warned "inside a WordPress theme"'
+
+fresh
+"$webpopt" --init -w 800 -o source-assets/webp >"$tmp/out" 2>"$tmp/err"; rc=$?
+check "--init creates .webpopt.conf" test "$rc" -eq 0 -a -s .webpopt.conf
+check "--init writes max_width and output_dir" \
+  eval 'grep -q "^max_width = 800$" .webpopt.conf && grep -q "^output_dir = source-assets/webp$" .webpopt.conf'
+"$webpopt" photo.jpg >/dev/null 2>&1
+check "a config written by --init is accepted and applied" test "$(dims source-assets/webp/photo.webp)" = 320x240
+"$webpopt" --init >"$tmp/out" 2>"$tmp/err"; rc=$?
+check "--init refuses to overwrite (exit 2)" test "$rc" -eq 2
+rm .webpopt.conf
+"$webpopt" --init >/dev/null 2>&1
+check "--init without -w defaults max_width to 1920" grep -q "^max_width = 1920$" .webpopt.conf
+rm .webpopt.conf
+"$webpopt" --init -o /abs >"$tmp/out" 2>"$tmp/err"; rc=$?
+check "--init rejects an absolute -o (exit 2), writes nothing" test "$rc" -eq 2 -a ! -e .webpopt.conf
+
+check "--help documents the Media Library import and --init" \
+  eval '"$webpopt" --help | grep -q "Media Library as an attachment" && "$webpopt" --help | grep -q -- "--init"'
+check "no 'reference the .webp' wording remains in docs or skill" \
+  eval '! grep -rniE "reference the \.webp|before referencing|point the page at" "$root/README.md" "$root/CONTRACT.md" "$root/examples" "$root/skills" "$root/bin"'
+check "SKILL.md tells agents to use the attachment ID and keep originals outside the theme" \
+  eval 'grep -q "attachment ID" "$root/skills/webp-optimizer/SKILL.md" && grep -q "outside the theme" "$root/skills/webp-optimizer/SKILL.md"'
+
 # --- batch / output dir / odd names ----------------------------------------
 fresh
 mkdir -p "site/img/sub dir" out

@@ -21,7 +21,10 @@ network access, telemetry, parallel job scheduling.
 1. **Defaults**: quality 80, effort 6 (`cwebp -q 80 -m 6`), ICC profile kept,
    other metadata dropped, output next to the source as `<stem>.webp`.
    Output naming is defined in section 3.
-2. **Precedence**: command line > `.webpopt.conf` > built-in defaults.
+2. **Precedence**: command line > `.webpopt.conf` > built-in defaults. The
+   config key `output_dir` is a relative path (no `..`) resolved against the
+   config file's directory; `-o` overrides it. `--init` writes a starter
+   `.webpopt.conf` in the current directory and never overwrites one.
 3. **Input detection** is by file content (`file --mime-type`), not extension.
    Directory scans consider `*.jpg`, `*.jpeg`, `*.png` (any case), skip `.git`
    and `node_modules`, do not follow symlinks, and recurse only with `-r`.

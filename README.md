@@ -57,6 +57,7 @@ webpopt [options] <file|directory>...
 | `-f, --force` | Re-encode even when the `.webp` is up to date |
 | `-n, --dry-run` | Show what would happen, write nothing |
 | `--config FILE` / `--no-config` | Choose or ignore the config file |
+| `--init` | Write a starter `.webpopt.conf` here (uses `-w`, `-o`, `-q`, `-e`; `max_width` defaults to 1920); refuses to overwrite |
 | `-Q, --quiet` | Only warnings and errors |
 
 Examples:
@@ -135,10 +136,48 @@ quality = 80
 effort = 6
 max_width = 1920
 metadata = icc
+output_dir = source-assets/webp   # relative to the config file; -o overrides
 ```
 
 Precedence: command line > config file > built-in defaults. The file is parsed
 as plain `key = value` lines and is never executed.
+
+## WordPress / NativePress workflow
+
+NativePress themes do not reference image files. An image is imported into the
+WordPress Media Library as an attachment and the theme or template uses the
+**attachment ID**. So `webpopt` is an asset-intake step: optimize, then import.
+
+Recommended layout, with the originals and the mapping outside the theme:
+
+```
+<site>/
+  .webpopt.conf              per-site preferences (webpopt --init creates it)
+  source-assets/img/         originals (JPEG/PNG), never in the theme
+  source-assets/webp/        converted .webp files and .webpopt-names
+  wp-content/themes/<theme>/ theme code only: no images from this workflow
+```
+
+```sh
+cd <site>
+webpopt --init -w 1920 -o source-assets/webp      # once per site
+webpopt -r source-assets/img                      # -> source-assets/webp/...
+# then import the .webp files into the Media Library (wp media import, or the
+# admin) and use the attachment ID in the theme/templates
+```
+
+`webpopt` prints a warning when a source or output path is inside
+`wp-content/themes/`. `.webpopt-names` is written next to the outputs, so with
+the layout above it stays in `source-assets/webp/`.
+
+### Choosing max_width per site
+
+WordPress generates its sub-sizes from the uploaded original, so the original
+should be no wider than the largest size the site shows. Pick it per site (one
+`.webpopt.conf` per site): about **1920** for full-width heroes, **1200** for
+content images, **600-800** for product thumbnails. Check the registered sizes
+in the theme (`add_image_size`) or with `wp media image-size`. The command-line
+option `-w` always overrides the file. `webpopt` never upscales.
 
 ## Agent Skill
 
@@ -176,7 +215,8 @@ Code, `AGENTS.md` for Codex CLI and others). A ready-to-paste snippet is in
 ```markdown
 ## Images
 When adding or replacing JPEG/PNG images used on web pages, use the
-`webp-optimizer` skill to create WebP versions before referencing them.
+`webp-optimizer` skill to create WebP versions, then (WordPress/NativePress)
+import them into the Media Library and use the attachment ID.
 Preferences are in `.webpopt.conf`. Keep the original files.
 ```
 
