@@ -12,7 +12,7 @@ fixtures="$here/fixtures"
 
 for dep in cwebp webpinfo dwebp jpegtran file sha256sum; do
   command -v "$dep" >/dev/null 2>&1 || {
-    echo "missing test dependency: $dep (sudo dnf install libwebp-tools libjpeg-turbo-utils file)" >&2
+    echo "missing test dependency: $dep (Fedora: sudo dnf install libwebp-tools libjpeg-turbo-utils file; Arch/CachyOS: sudo pacman -S libwebp-utils libjpeg-turbo file)" >&2
     exit 3
   }
 done

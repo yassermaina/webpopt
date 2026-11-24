@@ -12,6 +12,13 @@
   suite; ShellCheck and GitHub Actions CI.
 - **0.1.0** — first release: CLI, Agent Skill, installer, tests, docs.
 
+## CachyOS port (branch `cachyos`, 2026-11-24)
+
+`install.sh` detects `pacman` (packages `libwebp-utils`, `libjpeg-turbo`, `file`) next to `dnf`;
+error messages and README name both. CLI behavior is unchanged (still 0.1.1). `tests/run.sh`:
+109 passed, 0 failed on CachyOS. Global skill installs (`--skill claude`, `--skill agents`) done
+and checked with a smoke test; automatic invocation in a real session not tested.
+
 ## Skill integration checks (0.1.1)
 
 Test: a throwaway project with the Skill installed per project and the task

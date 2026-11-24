@@ -2,7 +2,7 @@
 
 [![tests](https://github.com/yassermaina/webpopt/actions/workflows/tests.yml/badge.svg)](https://github.com/yassermaina/webpopt/actions/workflows/tests.yml)
 
-A small, Fedora-first command-line tool that converts JPEG and PNG images to
+A small command-line tool (Fedora and Arch/CachyOS) that converts JPEG and PNG images to
 optimized WebP, plus a portable **Agent Skill** so coding agents (Claude Code,
 Codex CLI and other skill-compatible agents) can prepare website images the
 same way.
@@ -14,7 +14,7 @@ same way.
 - Skips work that is not needed and discards a WebP that is not smaller.
 - Never overwrites a `.webp` it did not create; name clashes get `photo-1.webp`, `photo-2.webp`, ….
 
-## Install (Fedora)
+## Install (Fedora, Arch/CachyOS)
 
 ```sh
 curl -fsSLO https://github.com/yassermaina/webpopt/releases/download/v0.1.1/webpopt-0.1.1.tar.gz
@@ -26,13 +26,16 @@ tar xzf webpopt-0.1.1.tar.gz && cd webpopt-0.1.1
 
 `install.sh` copies `webpopt` to `~/.local/bin` and, if `cwebp`, `jpegtran` or
 `file` is missing, installs `libwebp-tools`, `libjpeg-turbo-utils` and `file`
-with `sudo dnf`. Use `--no-deps` to skip that, `--bin-dir DIR` to choose another
+with `sudo dnf` (Fedora) or `libwebp-utils`, `libjpeg-turbo` and `file` with
+`sudo pacman` (Arch/CachyOS). Use `--no-deps` to skip that, `--bin-dir DIR` to choose another
 location, and `./install.sh --help` for the rest.
 
 From a clone it is the same: `git clone https://github.com/yassermaina/webpopt && cd webpopt && ./install.sh`.
 
 On other distributions install the equivalent packages yourself (`webp`,
 `libjpeg-turbo-progs`/`libjpeg-turbo`, `file`) and run `./install.sh --no-deps`.
+On Arch/CachyOS, `cwebp`, `dwebp` and `webpinfo` come from `libwebp-utils` and
+`jpegtran` from `libjpeg-turbo`; the tests also need those two packages.
 
 ## Usage
 
@@ -188,7 +191,7 @@ tests/run.sh
 
 Plain Bash, no framework. Needs `cwebp`, `webpinfo`, `dwebp` (all in
 `libwebp-tools`), `jpegtran` and `file`. GitHub Actions runs ShellCheck and
-this suite in a Fedora container on every push.
+this suite in a Fedora container on every push (the Arch/CachyOS port is checked by running the same suite locally).
 
 ## Uninstall
 
@@ -197,7 +200,8 @@ rm -f ~/.local/bin/webpopt
 rm -rf ~/.claude/skills/webp-optimizer ~/.codex/skills/webp-optimizer ~/.agents/skills/webp-optimizer
 # per-project copies, if any:  rm -rf <project>/.claude/skills/webp-optimizer
 # optional, only if nothing else needs them:
-sudo dnf remove libwebp-tools libjpeg-turbo-utils
+sudo dnf remove libwebp-tools libjpeg-turbo-utils     # Fedora
+sudo pacman -Rns libwebp-utils                         # Arch/CachyOS
 ```
 
 `webpopt` keeps nothing outside your projects. Generated `.webp` files and the

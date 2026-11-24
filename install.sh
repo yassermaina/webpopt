@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install webpopt and, optionally, the webp-optimizer Agent Skill. Fedora-first.
+# Install webpopt and, optionally, the webp-optimizer Agent Skill. Fedora and Arch/CachyOS.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -18,12 +18,13 @@ Usage: ./install.sh [options]
                       agents   -> ~/.agents/skills
                       DIR      -> any skills directory, e.g. ./.claude/skills
                     May be given more than once.
-  --no-deps         Do not install missing system packages with dnf
+  --no-deps         Do not install missing system packages (dnf or pacman)
   -h, --help        Show this help
 
 Nothing is installed outside the directories above. System packages
-(libwebp-tools, libjpeg-turbo-utils, file) are installed with "sudo dnf" only
-if a required command is missing.
+are installed only if a required command is missing: with "sudo dnf"
+(libwebp-tools, libjpeg-turbo-utils, file) on Fedora, or with "sudo pacman"
+(libwebp-utils, libjpeg-turbo, file) on Arch/CachyOS.
 EOF
 }
 
@@ -45,18 +46,35 @@ while (($# > 0)); do
   shift
 done
 
+# Package names differ by distribution.
+if command -v pacman >/dev/null 2>&1; then
+  pkg_mgr=pacman
+  pkg_webp=libwebp-utils; pkg_jpeg=libjpeg-turbo; pkg_file=file
+else
+  pkg_mgr=dnf
+  pkg_webp=libwebp-tools; pkg_jpeg=libjpeg-turbo-utils; pkg_file=file
+fi
+
 missing=()
-command -v cwebp >/dev/null 2>&1    || missing+=(libwebp-tools)
-command -v jpegtran >/dev/null 2>&1 || missing+=(libjpeg-turbo-utils)
-command -v file >/dev/null 2>&1     || missing+=(file)
+command -v cwebp >/dev/null 2>&1    || missing+=("$pkg_webp")
+command -v jpegtran >/dev/null 2>&1 || missing+=("$pkg_jpeg")
+command -v file >/dev/null 2>&1     || missing+=("$pkg_file")
 
 if ((${#missing[@]} > 0)); then
-  if ((install_deps)) && command -v dnf >/dev/null 2>&1; then
+  if ((install_deps)) && command -v "$pkg_mgr" >/dev/null 2>&1; then
     echo "Installing system packages: ${missing[*]}"
-    sudo dnf install -y "${missing[@]}"
+    if [[ $pkg_mgr == pacman ]]; then
+      sudo pacman -S --needed "${missing[@]}"
+    else
+      sudo dnf install -y "${missing[@]}"
+    fi
   else
     echo "Missing packages: ${missing[*]}" >&2
-    echo "Install them first (Fedora: sudo dnf install ${missing[*]})." >&2
+    if [[ $pkg_mgr == pacman ]]; then
+      echo "Install them first (Arch/CachyOS: sudo pacman -S ${missing[*]})." >&2
+    else
+      echo "Install them first (Fedora: sudo dnf install ${missing[*]})." >&2
+    fi
     exit 3
   fi
 fi

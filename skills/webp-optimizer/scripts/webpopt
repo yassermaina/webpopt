@@ -360,7 +360,7 @@ process() {
     esac
   fi
   if [[ -n $jt_op ]] && ! command -v jpegtran >/dev/null 2>&1; then
-    fail "$src" "has EXIF orientation $orient but jpegtran is missing (dnf install libjpeg-turbo-utils)"
+    fail "$src" "has EXIF orientation $orient but jpegtran is missing (Fedora: dnf install libjpeg-turbo-utils; Arch: pacman -S libjpeg-turbo)"
     return
   fi
 
@@ -523,7 +523,7 @@ done
 
 for dep in cwebp file find stat mktemp sort; do
   command -v "$dep" >/dev/null 2>&1 ||
-    die 3 "missing dependency: $dep (on Fedora: sudo dnf install libwebp-tools file)"
+    die 3 "missing dependency: $dep (Fedora: sudo dnf install libwebp-tools file; Arch/CachyOS: sudo pacman -S libwebp-utils file)"
 done
 
 if [[ -n $output_dir ]]; then
